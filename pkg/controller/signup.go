@@ -116,8 +116,8 @@ func (s *Signup) GetHandler(ctx *gin.Context) {
 	}
 }
 
-// VerifyCodeHandler validates the phone verification code passed in by the user
-func (s *Signup) VerifyCodeHandler(ctx *gin.Context) {
+// VerifyPhoneCodeHandler validates the phone verification code passed in by the user
+func (s *Signup) VerifyPhoneCodeHandler(ctx *gin.Context) {
 	code := ctx.Param("code")
 	if code == "" {
 		log.Error(ctx, nil, "no code provided in request")
@@ -127,14 +127,39 @@ func (s *Signup) VerifyCodeHandler(ctx *gin.Context) {
 
 	userID := ctx.GetString(context.SubKey)
 
-	err := s.app.VerificationService().VerifyCode(ctx, userID, code)
+	err := s.app.VerificationService().VerifyPhoneCode(ctx, userID, code)
 	if err != nil {
-		log.Error(ctx, err, "error validating user verification code")
+		log.Error(ctx, err, "error validating user verification with phone code")
 		switch t := err.(type) {
 		default:
-			errors.AbortWithError(ctx, http.StatusInternalServerError, err, "unexpected error while verifying code")
+			errors.AbortWithError(ctx, http.StatusInternalServerError, err, "unexpected error while verifying phone code")
 		case *errors.Error:
-			errors.AbortWithError(ctx, int(t.Code), err, "error while verifying code")
+			errors.AbortWithError(ctx, int(t.Code), err, "error while verifying phone code")
+		}
+		return
+	}
+	ctx.Status(http.StatusOK)
+}
+
+// VerifyActivationCodeHandler validates the activation code passed in by the user
+func (s *Signup) VerifyActivationCodeHandler(ctx *gin.Context) {
+	code := ctx.Param("code")
+	if code == "" {
+		log.Error(ctx, nil, "no code provided in request")
+		ctx.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	userID := ctx.GetString(context.SubKey)
+
+	err := s.app.VerificationService().VerifyActivationCode(ctx, userID, code)
+	if err != nil {
+		log.Error(ctx, err, "error validating user with activation code")
+		switch t := err.(type) {
+		default:
+			errors.AbortWithError(ctx, http.StatusInternalServerError, err, "unexpected error while verifying activation code")
+		case *errors.Error:
+			errors.AbortWithError(ctx, int(t.Code), err, "error while verifying activation code")
 		}
 		return
 	}

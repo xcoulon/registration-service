@@ -10,20 +10,17 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/codeready-toolchain/toolchain-common/pkg/states"
-
-	"github.com/kevinburke/twilio-go"
-
+	toolchainv1alpha1 "github.com/codeready-toolchain/api/api/v1alpha1"
 	"github.com/codeready-toolchain/registration-service/pkg/application/service"
 	"github.com/codeready-toolchain/registration-service/pkg/application/service/base"
 	servicecontext "github.com/codeready-toolchain/registration-service/pkg/application/service/context"
 	"github.com/codeready-toolchain/registration-service/pkg/configuration"
-
 	"github.com/codeready-toolchain/registration-service/pkg/errors"
-
-	toolchainv1alpha1 "github.com/codeready-toolchain/api/api/v1alpha1"
 	"github.com/codeready-toolchain/registration-service/pkg/log"
+	"github.com/codeready-toolchain/toolchain-common/pkg/states"
+
 	"github.com/gin-gonic/gin"
+	"github.com/kevinburke/twilio-go"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
@@ -213,9 +210,18 @@ func generateVerificationCode() (string, error) {
 	return string(buf), nil
 }
 
-// VerifyCode validates the user's phone verification code.  It updates the specified UserSignup value, so even
+// VerifyPhoneCode validates the user's phone verification code.  It updates the specified UserSignup value, so even
 // if an error is returned by this function the caller should still process changes to it
-func (s *ServiceImpl) VerifyCode(ctx *gin.Context, userID string, code string) (verificationErr error) {
+// The phone code verification uses the following annotations to track:
+// - the number of times a user requested a new phone code to be sent on her phone (`toolchainv1alpha1.UserSignupVerificationCounterAnnotationKey`)
+// - the number of times a user tried to input the phone code she received on her phone (`toolchainv1alpha1.UserVerificationAttemptsAnnotationKey`)
+// - that a user inputs the code within a certain amount of time (`toolchainv1alpha1.UserVerificationExpiryAnnotationKey` vs `cfg.Verification().CodeExpiresInMin()`)
+// - that a user waited for 24hrs before trying again the phone verification (`toolchainv1alpha1.UserSignupVerificationInitTimestampAnnotationKey`)
+// The phone code verification also uses the 2 following limits set in the configuration:
+// - the max number of phone code requests per 24h, so that a user cannot request too many codes (`cfg.Verification().DailyLimit()`)
+// - the max number of attempts per code, so that a user cannot use brute force to guess the code (`cfg.Verification().AttemptsAllowed()`)
+//
+func (s *ServiceImpl) VerifyPhoneCode(ctx *gin.Context, userID string, code string) (verificationErr error) {
 
 	cfg := configuration.GetRegistrationServiceConfig()
 	// If we can't even find the UserSignup, then die here
@@ -326,6 +332,102 @@ func (s *ServiceImpl) VerifyCode(ctx *gin.Context, userID string, code string) (
 	return
 }
 
+// VerifyActivationCode validates the user's activation verification code.  It updates the specified UserSignup value, so even
+// if an error is returned by this function the caller should still process changes to it
+// The activation code verification uses the following annotation to track:
+// - the number of times a user tried to input the activation code she got (`toolchainv1alpha1.UserVerificationAttemptsAnnotationKey`)
+// The activation code verification also uses the following limit set in the configuration:
+// - the max number of attempts, so that a user cannot use brute force to guess the code (`cfg.Verification().AttemptsAllowed()`)
+
+func (s *ServiceImpl) VerifyActivationCode(ctx *gin.Context, userID string, code string) (verificationErr error) {
+	cfg := configuration.GetRegistrationServiceConfig()
+
+	// If we can't even find the UserSignup, then die here
+	signup, err := s.Services().SignupService().GetUserSignup(userID)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Error(ctx, err, "usersignup not found")
+			return errors.NewNotFoundError(err, "user not found")
+		}
+		log.Error(ctx, err, "error retrieving usersignup")
+		return errors.NewInternalError(err, fmt.Sprintf("error retrieving usersignup: %s", userID))
+	}
+
+	annotationValues := map[string]string{}
+
+	attemptsMade, convErr := strconv.Atoi(signup.Annotations[toolchainv1alpha1.UserVerificationAttemptsAnnotationKey])
+	if convErr != nil {
+		// We shouldn't get an error here, but if we do, we will set verification attempts to max allowed
+		// so that we at least now have a valid value, and let the workflow continue to the
+		// subsequent attempts check
+		log.Error(ctx, convErr, fmt.Sprintf("error converting annotation [%s] value [%s] to integer, on UserSignup: [%s]",
+			toolchainv1alpha1.UserVerificationAttemptsAnnotationKey,
+			signup.Annotations[toolchainv1alpha1.UserVerificationAttemptsAnnotationKey], signup.Name))
+		attemptsMade = cfg.Verification().AttemptsAllowed()
+		annotationValues[toolchainv1alpha1.UserVerificationAttemptsAnnotationKey] = strconv.Itoa(attemptsMade)
+	}
+
+	// If the user has made more attempts than is allowed per generated verification code, return an error
+	if attemptsMade >= cfg.Verification().AttemptsAllowed() {
+		verificationErr = errors.NewTooManyRequestsError("too many verification attempts", "")
+	}
+
+	if verificationErr == nil {
+		// check if there is a valid activation code matching the user input
+		log.Infof(ctx, "checking activation code %q", code)
+		var activationCode *toolchainv1alpha1.ActivationCode
+		activationCode, verificationErr = s.CRTClient().V1Alpha1().ActivationCodes().GetByCode(code)
+		if verificationErr != nil || // code doesn't exist
+			activationCode.Spec.StartDate.After(time.Now()) || // not started
+			!activationCode.Spec.EndDate.After(time.Now()) || // already ended
+			activationCode.Status.NumberOfUsers == activationCode.Spec.MaxNumberOfUsers { // no more seats available
+			attemptsMade++
+			annotationValues[toolchainv1alpha1.UserVerificationAttemptsAnnotationKey] = strconv.Itoa(attemptsMade)
+			verificationErr = errors.NewForbiddenError("invalid code", "the provided code is invalid")
+		}
+	}
+
+	unsetVerificationRequired := false
+	annotationsToDelete := []string{}
+	if verificationErr == nil {
+		// If the code matches then set VerificationRequired to false, reset other verification annotations
+		unsetVerificationRequired = true
+		annotationsToDelete = append(annotationsToDelete, toolchainv1alpha1.UserVerificationAttemptsAnnotationKey)
+	} else {
+		log.Error(ctx, verificationErr, "error validating the activation code")
+	}
+
+	if updateErr := pollUpdateSignup(ctx, func() error {
+		signup, err := s.Services().SignupService().GetUserSignup(userID)
+		if err != nil {
+			return err
+		}
+
+		if unsetVerificationRequired {
+			states.SetVerificationRequired(signup, false)
+			if signup.Labels == nil {
+				signup.Labels = map[string]string{}
+			}
+			signup.Labels[toolchainv1alpha1.UserSignupActivationCodeLabelKey] = code
+		}
+
+		for k, v := range annotationValues {
+			signup.Annotations[k] = v
+		}
+
+		for _, annotationName := range annotationsToDelete {
+			delete(signup.Annotations, annotationName)
+		}
+
+		_, err = s.Services().SignupService().UpdateUserSignup(signup)
+		return err
+	}); updateErr != nil {
+		return updateErr
+	}
+	// return the optional verification error, unless the UserSignup update failed
+	return verificationErr
+}
+
 func pollUpdateSignup(ctx *gin.Context, updater func() error) error {
 	// Attempt to execute an update function, retrying a number of times if the update fails
 	attempts := 0
@@ -348,7 +450,7 @@ func pollUpdateSignup(ctx *gin.Context, updater func() error) error {
 		if attempts > 4 {
 			return errors.NewInternalError(errs.New("there was an error while updating your account - please wait a moment before trying again."+
 				" If this error persists, please contact the Developer Sandbox team at devsandbox@redhat.com for assistance"),
-				"error while verifying code")
+				"error while verifying phone code")
 		}
 	}
 

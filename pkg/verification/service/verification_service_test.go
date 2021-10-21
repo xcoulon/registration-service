@@ -233,7 +233,7 @@ func (s *TestVerificationServiceSuite) TestInitVerificationClientFailure() {
 		require.Error(s.T(), err)
 		require.Equal(s.T(), "there was an error while updating your account - please wait a moment before "+
 			"trying again. If this error persists, please contact the Developer Sandbox team at devsandbox@redhat.com "+
-			"for assistance:error while verifying code", err.Error())
+			"for assistance:error while verifying phone code", err.Error())
 	})
 
 	s.T().Run("when client UPDATE call fails twice should return ok", func(t *testing.T) {
@@ -602,7 +602,7 @@ func (s *TestVerificationServiceSuite) TestVerifyCode() {
 		require.NoError(s.T(), err)
 
 		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
-		err = s.Application.VerificationService().VerifyCode(ctx, userSignup.Name, "123456")
+		err = s.Application.VerificationService().VerifyPhoneCode(ctx, userSignup.Name, "123456")
 		require.NoError(s.T(), err)
 
 		userSignup, err = s.FakeUserSignupClient.Get(userSignup.Name)
@@ -640,7 +640,7 @@ func (s *TestVerificationServiceSuite) TestVerifyCode() {
 		require.NoError(s.T(), err)
 
 		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
-		err = s.Application.VerificationService().VerifyCode(ctx, userSignup.Name, "123456")
+		err = s.Application.VerificationService().VerifyPhoneCode(ctx, userSignup.Name, "123456")
 		require.Error(s.T(), err)
 		require.IsType(s.T(), err, &errors.Error{})
 		require.Equal(s.T(), "invalid code:the provided code is invalid", err.(*errors.Error).Error())
@@ -675,7 +675,7 @@ func (s *TestVerificationServiceSuite) TestVerifyCode() {
 		require.NoError(s.T(), err)
 
 		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
-		err = s.Application.VerificationService().VerifyCode(ctx, userSignup.Name, "123456")
+		err = s.Application.VerificationService().VerifyPhoneCode(ctx, userSignup.Name, "123456")
 		require.Error(s.T(), err)
 		require.IsType(s.T(), err, &errors.Error{})
 		require.Equal(s.T(), "expired:verification code expired", err.(*errors.Error).Error())
@@ -710,7 +710,7 @@ func (s *TestVerificationServiceSuite) TestVerifyCode() {
 		require.NoError(s.T(), err)
 
 		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
-		err = s.Application.VerificationService().VerifyCode(ctx, userSignup.Name, "123456")
+		err = s.Application.VerificationService().VerifyPhoneCode(ctx, userSignup.Name, "123456")
 		require.Error(s.T(), err)
 		require.Equal(s.T(), "too many verification attempts:", err.Error())
 	})
@@ -743,7 +743,7 @@ func (s *TestVerificationServiceSuite) TestVerifyCode() {
 		require.NoError(s.T(), err)
 
 		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
-		err = s.Application.VerificationService().VerifyCode(ctx, userSignup.Name, "123456")
+		err = s.Application.VerificationService().VerifyPhoneCode(ctx, userSignup.Name, "123456")
 		require.Error(s.T(), err)
 		require.Equal(s.T(), "too many verification attempts:", err.Error())
 
@@ -781,7 +781,7 @@ func (s *TestVerificationServiceSuite) TestVerifyCode() {
 		require.NoError(s.T(), err)
 
 		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
-		err = s.Application.VerificationService().VerifyCode(ctx, userSignup.Name, "123456")
+		err = s.Application.VerificationService().VerifyPhoneCode(ctx, userSignup.Name, "123456")
 		require.Error(s.T(), err)
 		require.Equal(s.T(), "parsing time \"ABC\" as \"2006-01-02T15:04:05.000Z07:00\": cannot parse \"ABC\" as \"2006\":error parsing expiry timestamp", err.Error())
 	})
